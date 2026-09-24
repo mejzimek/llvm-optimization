@@ -28,20 +28,75 @@ namespace {
       return Branch;
     }
 
-    bool isTheSameCondition(Value *Condition1, Value *Condition2) {
+    bool getStrictForm(ICmpInst *Cmp, CmpInst::Predicate &Pred, APInt &C) {
+      ConstantInt *RHS = dyn_cast<ConstantInt>(Cmp->getOperand(1));
+      if (RHS == nullptr) {
+        return false;
+      }
+
+      Pred = Cmp->getPredicate();
+      C = RHS->getValue();
+
+      switch (Pred) {
+        case ICmpInst::ICMP_SGE:
+          if (C.isMinSignedValue()) {
+            return false;
+          }
+          Pred = ICmpInst::ICMP_SGT;
+          C -= 1;
+          break;
+        case ICmpInst::ICMP_SLE:
+          if (C.isMaxSignedValue()) {
+            return false;
+          }
+          Pred = ICmpInst::ICMP_SLT;
+          C += 1;
+          break;
+        case ICmpInst::ICMP_UGE:
+          if (C.isMinValue()) {
+            return false;
+          }
+          Pred = ICmpInst::ICMP_UGT;
+          C -= 1;
+          break;
+        case ICmpInst::ICMP_ULE:
+          if (C.isMaxValue()) {
+            return false;
+          }
+          Pred = ICmpInst::ICMP_ULT;
+          C += 1;
+          break;
+        default:
+          break;
+      }
+
+      return true;
+    }
+
+    bool isEquivalentCondition(Value *Condition1, Value *Condition2) {
       if (Condition1 == Condition2) {
         return true;
       }
 
       ICmpInst *Cmp1 = dyn_cast<ICmpInst>(Condition1);
       ICmpInst *Cmp2 = dyn_cast<ICmpInst>(Condition2);
-      if (Cmp1 == nullptr || Cmp2 == nullptr) {
+      if (Cmp1 == nullptr || Cmp2 == nullptr ||
+          Cmp1->getOperand(0) != Cmp2->getOperand(0)) {
         return false;
       }
 
-      return Cmp1->getPredicate() == Cmp2->getPredicate() &&
-        Cmp1->getOperand(0) == Cmp2->getOperand(0) &&
-        Cmp1->getOperand(1) == Cmp2->getOperand(1);
+      if (Cmp1->getPredicate() == Cmp2->getPredicate() &&
+          Cmp1->getOperand(1) == Cmp2->getOperand(1)) {
+        return true;
+      }
+
+      CmpInst::Predicate Pred1, Pred2;
+      APInt C1, C2;
+      if (!getStrictForm(Cmp1, Pred1, C1) || !getStrictForm(Cmp2, Pred2, C2)) {
+        return false;
+      }
+
+      return Pred1 == Pred2 && C1 == C2;
     }
 
     bool isDefinedInBlock(Value *V, BasicBlock *BB) {
@@ -77,7 +132,7 @@ namespace {
         BranchInst *Branch = getConditionalBranch(Parent);
 
         if (Branch != nullptr &&
-            isTheSameCondition(Branch->getCondition(), Condition) &&
+            isEquivalentCondition(Branch->getCondition(), Condition) &&
             isConditionStable(Branch->getCondition(), BB)) {
           bool OnTrueEdge = Branch->getSuccessor(0) == Child;
           bool OnFalseEdge = Branch->getSuccessor(1) == Child;
